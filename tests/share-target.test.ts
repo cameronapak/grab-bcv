@@ -156,6 +156,8 @@ describe("findAnyPassage", () => {
   it("returns null for invalid input", () => {
     expect(findAnyPassage("")).toBeNull();
     expect(findAnyPassage("not a passage")).toBeNull();
+    expect(findAnyPassage("John https://example.com 3")).toBeNull();
+    expect(findAnyPassage("John https://example.com 3", { multiple: true })).toEqual([]);
   });
 
   it.each([
@@ -168,14 +170,19 @@ describe("findAnyPassage", () => {
     "Read John3:16,18 today.",
     "https://www.biblegateway.com/passage/?search=John%203%3A16%2C18",
     "https://www.bible.com/bible/1/JHN.3.16,18.KJV",
+    "https://www.bible.com/bible/1/JHN.3.16%2C18.KJV",
+    "https://www.bible.com/bible/1/JHN.3.16%3B18.KJV",
   ])("does not silently truncate unsupported numeric lists: %s", (input) => {
     expect(findAnyPassage(input)).toBeNull();
     expect(findAnyPassage(input, { multiple: true })).toEqual([]);
     expect(tryParseAnyPassage(input).ok).toBe(false);
+    expect(normalizeSharedPassage({ text: input })).toBeNull();
   });
 
-  it("skips an unsupported list without losing a separate valid passage", () => {
-    const input = "Read John 3:16,18 and Romans 8:28.";
+  it.each([
+    "Read John 3:16,18 and Romans 8:28.",
+    "Read https://www.bible.com/bible/1/JHN.3.16%2C18.KJV and Romans 8:28.",
+  ])("skips an unsupported list without losing a separate valid passage: %s", (input) => {
     expect(findAnyPassage(input)?.canonical).toBe("ROM.8.28");
     expect(findAnyPassage(input, { multiple: true }).map((p) => p.canonical)).toEqual(["ROM.8.28"]);
   });
@@ -214,6 +221,42 @@ describe("findAnyPassage", () => {
       "JHN.3.16", "1JN.4.7", "2CO.5.17"
     ]);
   });
+
+  it.each([
+    ["1st John 4:7", "1JN.4.7"],
+    ["2nd Corinthians 5:17", "2CO.5.17"],
+    ["3rd John 1:2", "3JN.1.2"],
+  ])("preserves both references when the second uses an ordinal: %s", (reference, canonical) => {
+    for (const separator of [",", ";"]) {
+      const input = `John 3:16${separator} ${reference}`;
+      expect(findAnyPassage(input)?.canonical).toBe("JHN.3.16");
+      expect(findAnyPassage(input, { multiple: true }).map((p) => p.canonical)).toEqual([
+        "JHN.3.16", canonical
+      ]);
+    }
+  });
+
+  it.each([
+    ["1 John 1:1", "1JN.1.1"],
+    ["1 jhon 1:1", "1JN.1.1"],
+    ["2 John 1:13", "2JN.1.13"],
+    ["3rd John 1:2", "3JN.1.2"],
+    ["First John 4:7-8", "1JN.4.7-8"],
+    ["II Corinthians 5:17", "2CO.5.17"],
+    ["like 1 John 1:1", "1JN.1.1"],
+  ])("keeps the numbered-book prefix after surrounding prose: %s", (reference, canonical) => {
+    const input = `Read ${reference} today.`;
+    expect(findAnyPassage(input)?.canonical).toBe(canonical);
+    expect(findAnyPassage(input, { multiple: true }).map((p) => p.canonical)).toEqual([canonical]);
+    expect(normalizeSharedPassage({ text: input })?.canonical).toBe(canonical);
+  });
+
+  it.each(["Read 1 John 6:1 today.", "Read 2 John 2:1 today."])(
+    "does not retry an invalid numbered reference as an unnumbered book: %s", (input) => {
+      expect(findAnyPassage(input)).toBeNull();
+      expect(findAnyPassage(input, { multiple: true })).toEqual([]);
+    }
+  );
 
   it("dedupes duplicate references when using multiple-output overload", () => {
     const parsed = findAnyPassage("John 3:16, JHN.3.16, and John 3:16", { multiple: true });

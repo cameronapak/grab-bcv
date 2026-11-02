@@ -1,4 +1,4 @@
-import { BOOK_ALIAS_TO_OSIS, OSIS_BOOK_CODES, OSIS_BOOK_NAMES, type OsisBookCode } from "./books";
+import { BOOK_ALIAS_TO_OSIS, OSIS_BOOK_CODES, OSIS_BOOK_NAMES, resolveBookAlias, type OsisBookCode } from "./books";
 import { formatPassageForDisplay } from "./format";
 import { parsePassage } from "./parser";
 import { PassageParseError, type ParsedPassage } from "./types";
@@ -51,7 +51,7 @@ const SHARE_QUERY_KEYS = ["reference", "passage", "search", "q", "ref", "scriptu
 const LOGOS_NEW_TESTAMENT_OFFSET = 21;
 const URL_TOKEN_PATTERN = "(?:https?:\\/\\/|[a-z][a-z0-9+.-]*:\\/\\/|www\\.)[^\\s)]+";
 const REFERENCE_TOKEN_PATTERN =
-  "[1-3]?[A-Za-z]{2,}\\.\\d+(?:\\.\\d+)?(?:-[1-3]?[A-Za-z]{2,}\\.\\d+\\.\\d+|-\\d+)?(?:\\.[A-Za-z0-9]{2,8})?|(?:[1-3]\\s*)?[A-Za-z]+(?:\\s+of\\s+[A-Za-z]+)?\\s+\\d+(?:(?::|\\s)\\d+(?:-\\d+)?)?";
+  "(?<![A-Za-z0-9])(?:([1-3]?[A-Za-z]{2,})\\.\\d+(?:\\.\\d+)?(?:-[1-3]?[A-Za-z]{2,}\\.\\d+\\.\\d+|-\\d+)?(?:\\.[A-Za-z0-9]{2,8})?|((?:[1-3](?:st|nd|rd)?\\s*|(?:first|second|third|i{1,3})\\s+)?[A-Za-z]+(?:\\s+of\\s+[A-Za-z]+)?)\\s+\\d+(?:(?::|\\s)\\d+(?:-\\d+)?)?)";
 const LEADING_WRAPPER_REGEX = /^[([{"'`]+/;
 const TRAILING_WRAPPER_REGEX = /[)\]}",;.!?'`]+$/;
 const DEFAULT_ROUTE_BASE_URL = "https://route.bible";
@@ -315,24 +315,42 @@ function extractUrlTokens(text: string): string[] {
 }
 
 function extractReferenceMatches(text: string): RegExpMatchArray[] {
-  return Array.from(text.matchAll(new RegExp(REFERENCE_TOKEN_PATTERN, "gi"))).filter((match) => {
+  // URLs have their own parser. Never reinterpret a rejected URL's encoded text.
+  // Keep positions and a non-whitespace barrier between text on either side.
+  const source = text.replace(new RegExp(URL_TOKEN_PATTERN, "gi"), (url) => "\0".repeat(url.length));
+  const pattern = new RegExp(REFERENCE_TOKEN_PATTERN, "gi");
+  const matches: RegExpMatchArray[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(source)) !== null) {
     const token = match[0];
-    const after = text.slice((match.index ?? 0) + token.length);
+    const bookRaw = match[1] ?? match[2]!;
+    if (!resolveBookAlias(bookRaw)) {
+      // "Read 1" is not a reference, but its digit may start "1 John 1:1".
+      pattern.lastIndex = match.index + 1;
+      continue;
+    }
+
+    const after = source.slice(match.index + token.length);
     // A single contiguous passage cannot represent a comma/semicolon numeric list.
     // A numbered book after punctuation starts a separate complete reference.
-    if (/^\s*[,;]\s*\d/.test(after) && !/^\s*[,;]\s*[1-3]\s*[A-Za-z]+[.\s]*\d/.test(after)) {
-      return false;
+    if (/^\s*[,;]\s*\d/.test(after) && !/^\s*[,;]\s*[1-3](?:st|nd|rd)?\s*[A-Za-z]+[.\s]*\d/i.test(after)) {
+      continue;
     }
 
-    const chapterOnly = token.match(/^((?:[1-3]\s*)?[A-Za-z]+(?:\s+of\s+[A-Za-z]+)?)[.\s]+\d+(?:-\d+)?$/);
+    const chapterOnly = /^[.\s]+\d+(?:-\d+)?$/.test(token.slice(bookRaw.length));
     if (chapterOnly && normalizeCandidateToken(text) !== token) {
-      const aliasKey = chapterOnly[1]!.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const aliasKey = bookRaw.toLowerCase().replace(/[^a-z0-9]/g, "");
       // In prose, words like "join 3 groups" are not sufficient evidence of John 3.
-      return EXACT_BOOK_ALIAS_KEYS.has(aliasKey);
+      if (!EXACT_BOOK_ALIAS_KEYS.has(aliasKey)) {
+        pattern.lastIndex = match.index + 1;
+        continue;
+      }
     }
 
-    return true;
-  });
+    matches.push(match);
+  }
+
+  return matches;
 }
 
 function extractReferenceTokens(text: string): string[] {
