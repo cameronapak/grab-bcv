@@ -164,6 +164,7 @@ function isAliasFuzzyEligible(key: string): boolean {
   return /[a-z]/.test(key);
 }
 
+/** Optimal string alignment (restricted Damerau-Levenshtein) distance, including adjacent transpositions. */
 function aliasEditDistance(a: string, b: string): number {
   const aLen = a.length;
   const bLen = b.length;
@@ -230,6 +231,10 @@ const NUMBERED_PREFIX_EXPANSIONS: Record<"1" | "2" | "3", string[]> = {
   "3": ["3", "3rd", "third", "iii"]
 };
 
+const NUMBERED_PREFIXES = Object.values(NUMBERED_PREFIX_EXPANSIONS)
+  .flat()
+  .sort((left, right) => right.length - left.length);
+
 function expandNumberedAliasKey(aliasKey: string): string[] {
   const match = aliasKey.match(/^([1-3])([a-z0-9]+)$/);
   if (!match) {
@@ -285,10 +290,16 @@ function resolveFuzzyBookAlias(key: string): OsisBookCode | null {
   }
 
   const inputStartsWithDigit = /^\d/.test(key);
+  const numberedPrefix = NUMBERED_PREFIXES.find((prefix) => key.startsWith(prefix));
   const byBook = new Map<OsisBookCode, AliasDistanceCandidate>();
 
   for (const [candidateKey, osis] of FUZZY_ALIAS_CANDIDATES) {
     if (key[0] !== candidateKey[0]) {
+      continue;
+    }
+
+    // Match the longest prefix so I, II, and III cannot be edited into each other.
+    if (NUMBERED_PREFIXES.find((prefix) => candidateKey.startsWith(prefix)) !== numberedPrefix) {
       continue;
     }
 
@@ -474,6 +485,15 @@ export function resolveBookAlias(input: string): OsisBookCode | null {
   const exactMatch = BOOK_ALIAS_TO_OSIS_INTERNAL.get(key);
   if (exactMatch) {
     return exactMatch;
+  }
+
+  const explicitPrefix = input.trim().match(/^([a-z0-9]+)[\s.]+(.+)$/i);
+  if (explicitPrefix) {
+    const ordinal = Object.entries(NUMBERED_PREFIX_EXPANSIONS)
+      .find(([, prefixes]) => prefixes.includes(explicitPrefix[1]!.toLowerCase()))?.[0];
+    if (ordinal) {
+      return resolveFuzzyBookAlias(`${ordinal}${toAliasKey(explicitPrefix[2]!)}`);
+    }
   }
 
   return resolveFuzzyBookAlias(key);

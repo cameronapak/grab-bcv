@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parsePassage, resolveBookAlias, tryParsePassage } from "../src/index";
+import { BOOK_ALIAS_TO_OSIS, parsePassage, resolveBookAlias, tryParsePassage } from "../src/index";
 
 describe("fuzzy book alias resolution", () => {
   it("resolves common misspellings for full book names", () => {
@@ -39,10 +39,51 @@ describe("fuzzy book alias resolution", () => {
     expect(parsePassage("1 Chr 1:1").canonical).toBe("1CH.1.1");
     expect(parsePassage("2 John 1:13").canonical).toBe("2JN.1.13");
     expect(resolveBookAlias("Ph")).toBeNull();
+    for (const [alias, book] of BOOK_ALIAS_TO_OSIS) {
+      expect(resolveBookAlias(alias), alias).toBe(book);
+    }
   });
 
   it("supports misspelled numbered book names", () => {
     expect(parsePassage("Second Corintians 5:17").canonical).toBe("2CO.5.17");
+  });
+
+  it.each([
+    ["II Kngs", "2KI"],
+    ["II Tmothy", "2TI"],
+    ["I Kigs", "1KI"],
+    ["ii.kngs", "2KI"],
+    ["IITmothy", "2TI"],
+    ["IKigs", "1KI"],
+    ["III Jhon", "3JN"],
+    ["First Kngs", "1KI"],
+    ["Second Kngs", "2KI"],
+    ["Third Jhon", "3JN"],
+    ["1st Kngs", "1KI"],
+    ["2nd Kngs", "2KI"],
+    ["3rd Jhon", "3JN"],
+    ["1 Kigs", "1KI"],
+    ["2 Tmothy", "2TI"],
+  ])("preserves the explicit ordinal in %s", (alias, book) => {
+    expect(resolveBookAlias(alias)).toBe(book);
+    expect(parsePassage(`${alias} 1:1`).canonical).toBe(`${book}.1.1`);
+  });
+
+  it("keeps unnumbered names beginning with Roman-numeral letters fuzzy eligible", () => {
+    expect(resolveBookAlias("Isaih")).toBe("ISA");
+    expect(resolveBookAlias("I Saaih")).toBeNull();
+    expect(tryParsePassage("I Saaih 1:1").ok).toBe(false);
+  });
+
+  it.each([
+    ["I Kigs 23:1", "1KI", 22],
+    ["II Tmothy 5:1", "2TI", 4],
+  ])("does not change the numbered book to satisfy chapter caps in %s", (input, book, maxChapter) => {
+    const result = tryParsePassage(input);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.details).toMatchObject({ book, maxChapter });
+    }
   });
 
   it("falls back to a chapter-valid alias when shorthand overflows", () => {

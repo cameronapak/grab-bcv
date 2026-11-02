@@ -161,18 +161,20 @@ describe("findAnyPassage", () => {
   });
 
   it.each([
-    "John 3:16,18",
     "John 3:16,1a",
-    "John 3:16; 18",
-    "John 3:16-18,20",
-    "JHN.3.16,18",
-    "Read John 3:16,18 today.",
-    "Read John3:16,18 today.",
-    "https://www.biblegateway.com/passage/?search=John%203%3A16%2C18",
-    "https://www.bible.com/bible/1/JHN.3.16,18.KJV",
-    "https://www.bible.com/bible/1/JHN.3.16%2C18.KJV",
-    "https://www.bible.com/bible/1/JHN.3.16%3B18.KJV",
-  ])("does not silently truncate unsupported numeric lists: %s", (input) => {
+    "Read John 3:16,1a2 today.",
+    "Read John 3:16,18a today.",
+    "Read John 3:16,37 today.",
+    "Read John 3:16,20-18 today.",
+    "Read John 3:16,4:2 today.",
+    "John 3,5",
+    "John 3;5",
+    "Read John 3,5 today.",
+    "Read John 3-5,7 today.",
+    "https://www.biblegateway.com/passage/?search=John%203%3A16%2C20-18",
+    "https://www.bible.com/bible/1/JHN.3.16,20-18.KJV",
+    "https://example.com/John-3-16%EF%BC%8C18",
+  ])("does not silently truncate invalid or unsupported numeric lists: %s", (input) => {
     expect(findAnyPassage(input)).toBeNull();
     expect(findAnyPassage(input, { multiple: true })).toEqual([]);
     expect(tryParseAnyPassage(input).ok).toBe(false);
@@ -180,8 +182,43 @@ describe("findAnyPassage", () => {
   });
 
   it.each([
-    "Read John 3:16,18 and Romans 8:28.",
-    "Read https://www.bible.com/bible/1/JHN.3.16%2C18.KJV and Romans 8:28.",
+    "John 3:16,18",
+    "John 3 16,18",
+    "John3:16,18",
+    "John 3:16; 18",
+    "JHN.3.16,18",
+    "Read John 3:16,18 today.",
+    "Read John 3 16,18 today.",
+    "Read John3:16,18 today.",
+    "Read John 3:16，18 today.",
+    "Read John 3:16；18 today.",
+    "Read Ｊｏｈｎ ３：１６，１８ today.",
+    "https://www.biblegateway.com/passage/?search=John%203%3A16%2C18",
+    "https://www.bible.com/bible/1/JHN.3.16,18.KJV",
+    "https://www.bible.com/bible/1/JHN.3.16%2C18.KJV",
+    "https://www.bible.com/bible/1/JHN.3.16%3B18.KJV",
+  ])("returns separate verses from a list only with multiple: true: %s", (input) => {
+    expect(findAnyPassage(input)).toBeNull();
+    expect(tryParseAnyPassage(input)).toMatchObject({ ok: false, error: { code: "INVALID_FORMAT" } });
+    expect(normalizeSharedPassage({ text: input })).toBeNull();
+    expect(findAnyPassage(input, { multiple: true }).map((p) => p.canonical)).toEqual([
+      "JHN.3.16", "JHN.3.18"
+    ]);
+    expect(parseAnyPassage(input, { multiple: true }).map((p) => p.canonical)).toEqual([
+      "JHN.3.16", "JHN.3.18"
+    ]);
+  });
+
+  it("preserves ranges, order, and separate numbered references in verse lists", () => {
+    const input = "Read John 3:16–18,20,16-18; 1 John 4:7，9 and Romans 8:28.";
+    expect(findAnyPassage(input, { multiple: true }).map((p) => p.canonical)).toEqual([
+      "JHN.3.16-18", "JHN.3.20", "1JN.4.7", "1JN.4.9", "ROM.8.28"
+    ]);
+  });
+
+  it.each([
+    "Read John 3:16,37 and Romans 8:28.",
+    "Read https://www.bible.com/bible/1/JHN.3.16%2C37.KJV and Romans 8:28.",
   ])("skips an unsupported list without losing a separate valid passage: %s", (input) => {
     expect(findAnyPassage(input)?.canonical).toBe("ROM.8.28");
     expect(findAnyPassage(input, { multiple: true }).map((p) => p.canonical)).toEqual(["ROM.8.28"]);
@@ -189,9 +226,12 @@ describe("findAnyPassage", () => {
 
   it.each([
     "Please join 3 groups",
+    "Please join3 groups",
     "The duet 2 starts soon",
     "We act on 3 requests",
     "I wrote like 10 notes",
+    "I wrote like４ notes",
+    "Read like.4.KJV today.",
     "See where like 4 is a bible chip LOL #bug #dotflowy",
   ])(
     "does not fuzzy-match chapter-only references in prose: %s", (input) => {

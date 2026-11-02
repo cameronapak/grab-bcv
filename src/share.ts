@@ -1,5 +1,6 @@
 import { BOOK_ALIAS_TO_OSIS, OSIS_BOOK_CODES, OSIS_BOOK_NAMES, resolveBookAlias, type OsisBookCode } from "./books";
 import { formatPassageForDisplay } from "./format";
+import { normalizePassageIntakeText } from "./normalize-intake";
 import { parsePassage } from "./parser";
 import { PassageParseError, type ParsedPassage } from "./types";
 
@@ -51,7 +52,7 @@ const SHARE_QUERY_KEYS = ["reference", "passage", "search", "q", "ref", "scriptu
 const LOGOS_NEW_TESTAMENT_OFFSET = 21;
 const URL_TOKEN_PATTERN = "(?:https?:\\/\\/|[a-z][a-z0-9+.-]*:\\/\\/|www\\.)[^\\s)]+";
 const REFERENCE_TOKEN_PATTERN =
-  "(?<![A-Za-z0-9])(?:([1-3]?[A-Za-z]{2,})\\.\\d+(?:\\.\\d+)?(?:-[1-3]?[A-Za-z]{2,}\\.\\d+\\.\\d+|-\\d+)?(?:\\.[A-Za-z0-9]{2,8})?|((?:[1-3](?:st|nd|rd)?\\s*|(?:first|second|third|i{1,3})\\s+)?[A-Za-z]+(?:\\s+of\\s+[A-Za-z]+)?)\\s+\\d+(?:(?::|\\s)\\d+(?:-\\d+)?)?)";
+  "(?<![A-Za-z0-9])(?:([1-3]?[A-Za-z]{2,})\\.\\d+(?:\\.\\d+)?(?:-[1-3]?[A-Za-z]{2,}\\.\\d+\\.\\d+|-\\d+)?(?:\\.[A-Za-z0-9]{2,8})?|((?:[1-3](?:st|nd|rd)?\\s*|(?:first|second|third|i{1,3})\\s+)?[A-Za-z]+(?:\\s+of\\s+[A-Za-z]+)?)\\s*\\d+(?:(?::|\\s)\\d+)?(?:-\\d+)?)";
 const LEADING_WRAPPER_REGEX = /^[([{"'`]+/;
 const TRAILING_WRAPPER_REGEX = /[)\]}",;.!?'`]+$/;
 const DEFAULT_ROUTE_BASE_URL = "https://route.bible";
@@ -215,6 +216,10 @@ function candidateVariants(value: string): string[] {
 }
 
 function tryCanonicalFromCandidate(value: string): string | null {
+  if (hasNumericList(value)) {
+    return null;
+  }
+
   const logosCanonical = parseLogosReference(value);
   if (logosCanonical) {
     return logosCanonical;
@@ -314,15 +319,44 @@ function extractUrlTokens(text: string): string[] {
   return text.match(new RegExp(URL_TOKEN_PATTERN, "gi")) ?? [];
 }
 
-function extractReferenceMatches(text: string): RegExpMatchArray[] {
+function hasNumericList(value: string): boolean {
+  return /\d\s*[,;]\s*\d/.test(normalizePassageIntakeText(tryDecode(value)));
+}
+
+function parseVerseList(value: string): string[] {
+  const normalized = normalizeCandidateToken(normalizePassageIntakeText(tryDecode(value)))
+    .replace(/\.[A-Za-z][A-Za-z0-9]{1,7}$/, "");
+  const parts = normalized.split(/\s*[,;]\s*/);
+  if (parts.length < 2 || !parts.slice(1).every((part) => /^\d+(?:-\d+)?$/.test(part))) {
+    return [];
+  }
+
+  const first = tryParseCanonical(parts[0]!);
+  if (!first?.start.verse || first.start.book !== first.end.book || first.start.chapter !== first.end.chapter) {
+    return [];
+  }
+
+  const canonicals = [first.canonical];
+  for (const part of parts.slice(1)) {
+    const parsed = tryParseCanonical(`${first.start.book}.${first.start.chapter}.${part}`);
+    if (!parsed) {
+      return [];
+    }
+    canonicals.push(parsed.canonical);
+  }
+  return canonicals;
+}
+
+function extractReferenceMatches(text: string): CandidateMatch[] {
+  text = normalizePassageIntakeText(text);
   // URLs have their own parser. Never reinterpret a rejected URL's encoded text.
   // Keep positions and a non-whitespace barrier between text on either side.
   const source = text.replace(new RegExp(URL_TOKEN_PATTERN, "gi"), (url) => "\0".repeat(url.length));
   const pattern = new RegExp(REFERENCE_TOKEN_PATTERN, "gi");
-  const matches: RegExpMatchArray[] = [];
+  const matches: CandidateMatch[] = [];
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(source)) !== null) {
-    const token = match[0];
+    let token = match[0];
     const bookRaw = match[1] ?? match[2]!;
     if (!resolveBookAlias(bookRaw)) {
       // "Read 1" is not a reference, but its digit may start "1 John 1:1".
@@ -330,14 +364,35 @@ function extractReferenceMatches(text: string): RegExpMatchArray[] {
       continue;
     }
 
-    const after = source.slice(match.index + token.length);
-    // A single contiguous passage cannot represent a comma/semicolon numeric list.
-    // A numbered book after punctuation starts a separate complete reference.
-    if (/^\s*[,;]\s*\d/.test(after) && !/^\s*[,;]\s*[1-3](?:st|nd|rd)?\s*[A-Za-z]+[.\s]*\d/i.test(after)) {
+    let after = source.slice(match.index + token.length);
+    let invalidList = false;
+    while (/^\s*[,;]\s*\d/.test(after)) {
+      const numberedBook = after.match(/^\s*[,;]\s*([1-3](?:st|nd|rd)?\s*[A-Za-z]+)[.\s]*\d/i)?.[1];
+      if (numberedBook && resolveBookAlias(numberedBook)) {
+        break;
+      }
+
+      const continuation = after.match(/^\s*[,;]\s*\d+(?:-\d+)?(?![A-Za-z0-9:]|[.-]\d)/)?.[0];
+      if (!continuation) {
+        invalidList = true;
+        break;
+      }
+      token += continuation;
+      after = after.slice(continuation.length);
+      pattern.lastIndex = match.index + token.length;
+    }
+    if (invalidList) {
       continue;
     }
+    if (hasNumericList(token)) {
+      const translation = after.match(/^\.[A-Za-z][A-Za-z0-9]{1,7}\b/)?.[0];
+      if (translation) {
+        token += translation;
+        pattern.lastIndex = match.index + token.length;
+      }
+    }
 
-    const chapterOnly = /^[.\s]+\d+(?:-\d+)?$/.test(token.slice(bookRaw.length));
+    const chapterOnly = /^[.\s]*\d+(?:-\d+)?(?:\.[A-Za-z][A-Za-z0-9]{1,7})?$/.test(token.slice(bookRaw.length));
     if (chapterOnly && normalizeCandidateToken(text) !== token) {
       const aliasKey = bookRaw.toLowerCase().replace(/[^a-z0-9]/g, "");
       // In prose, words like "join 3 groups" are not sufficient evidence of John 3.
@@ -347,14 +402,14 @@ function extractReferenceMatches(text: string): RegExpMatchArray[] {
       }
     }
 
-    matches.push(match);
+    matches.push({ token, index: match.index, priority: 2 });
   }
 
   return matches;
 }
 
 function extractReferenceTokens(text: string): string[] {
-  return unique(extractReferenceMatches(text).map((match) => match[0]));
+  return unique(extractReferenceMatches(text).map((match) => match.token));
 }
 
 function normalizeCandidateToken(raw: string): string {
@@ -366,6 +421,7 @@ function normalizeCandidateToken(raw: string): string {
 }
 
 function collectCandidateMatches(input: string): CandidateMatch[] {
+  input = normalizePassageIntakeText(input);
   const byToken = new Map<string, CandidateMatch>();
   const addCandidate = (rawToken: string, index: number, priority: number): void => {
     const token = normalizeCandidateToken(rawToken);
@@ -387,10 +443,7 @@ function collectCandidateMatches(input: string): CandidateMatch[] {
   }
 
   for (const match of extractReferenceMatches(input)) {
-    if (!match[0]) {
-      continue;
-    }
-    addCandidate(match[0], match.index ?? 0, 2);
+    addCandidate(match.token, match.index, match.priority);
   }
 
   return Array.from(byToken.values()).sort((a, b) => a.index - b.index || b.priority - a.priority || b.token.length - a.token.length);
@@ -499,10 +552,10 @@ function selectBestCanonical(candidates: string[]): string | null {
   return best?.canonical ?? null;
 }
 
-function parseFromUrl(raw: string): string | null {
+function parseFromUrl(raw: string, multiple = false): string[] {
   const parsed = tryParseUrl(raw);
   if (!parsed) {
-    return null;
+    return [];
   }
 
   const candidates: string[] = [];
@@ -609,9 +662,18 @@ function parseFromUrl(raw: string): string | null {
     }
   }
 
+  if (multiple) {
+    for (const candidate of candidates) {
+      const list = parseVerseList(candidate);
+      if (list.length > 0) {
+        return list;
+      }
+    }
+  }
+
   const structuralCanonical = selectBestCanonical(candidates);
   if (structuralCanonical) {
-    return structuralCanonical;
+    return [structuralCanonical];
   }
 
   const genericSources = unique([
@@ -625,11 +687,12 @@ function parseFromUrl(raw: string): string | null {
 
   for (const source of genericSources) {
     // Do not erase list punctuation and reinterpret separated verses as a range.
-    if (/\d\s*[,;]\s*\d/.test(tryDecode(source))) {
+    const decoded = normalizePassageIntakeText(tryDecode(source));
+    if (hasNumericList(decoded)) {
       continue;
     }
 
-    const normalized = normalizeUrlSurface(source);
+    const normalized = normalizeUrlSurface(decoded);
     if (!normalized) {
       continue;
     }
@@ -639,7 +702,8 @@ function parseFromUrl(raw: string): string | null {
     candidates.push(...extractReferenceWindows(normalized));
   }
 
-  return selectBestCanonical(candidates);
+  const canonical = selectBestCanonical(candidates);
+  return canonical ? [canonical] : [];
 }
 
 function parseFromText(raw: string): string | null {
@@ -649,7 +713,7 @@ function parseFromText(raw: string): string | null {
   }
 
   for (const token of extractUrlTokens(raw)) {
-    const canonical = parseFromUrl(token);
+    const canonical = parseFromUrl(token)[0];
     if (canonical) {
       return canonical;
     }
@@ -666,7 +730,7 @@ function parseFromText(raw: string): string | null {
 }
 
 function parseCandidateCanonical(candidate: string): string | null {
-  return parseFromUrl(candidate) ?? tryCanonicalFromCandidate(candidate) ?? parseFromText(candidate);
+  return parseFromUrl(candidate)[0] ?? tryCanonicalFromCandidate(candidate) ?? parseFromText(candidate);
 }
 
 function findMultipleAnyPassages(input: string): ParsedPassage[] {
@@ -687,12 +751,20 @@ function findMultipleAnyPassages(input: string): ParsedPassage[] {
   };
 
   for (const candidate of collectCandidateMatches(trimmed)) {
-    const canonical = parseCandidateCanonical(candidate.token);
-    if (!canonical) {
-      continue;
+    const canonicals = parseFromUrl(candidate.token, true);
+    if (canonicals.length === 0) {
+      canonicals.push(...parseVerseList(candidate.token));
+    }
+    if (canonicals.length === 0) {
+      const canonical = parseCandidateCanonical(candidate.token);
+      if (canonical) {
+        canonicals.push(canonical);
+      }
     }
 
-    addPassage(tryParseCanonical(canonical));
+    for (const canonical of canonicals) {
+      addPassage(tryParseCanonical(canonical));
+    }
   }
 
   if (passages.length > 0) {
@@ -710,7 +782,7 @@ export function extractSharedCanonical(payload: SharePayload): string | null {
     .filter(Boolean);
 
   for (const value of values) {
-    const fromUrl = parseFromUrl(value);
+    const fromUrl = parseFromUrl(value)[0];
     if (fromUrl) {
       return fromUrl;
     }
@@ -808,7 +880,7 @@ function getAnyPassageCandidate(input: string): string | null {
 
 function findSingleAnyPassage(input: string): ParsedPassage | null {
   const candidate = getAnyPassageCandidate(input);
-  if (!candidate) {
+  if (!candidate || hasNumericList(candidate)) {
     return null;
   }
 
@@ -835,6 +907,12 @@ function tryParseSingleAnyPassage(input: string): PassageResult {
   const candidate = getAnyPassageCandidate(input);
   if (!candidate) {
     return { ok: false, error: new PassageParseError("EMPTY", "Passage is required.") };
+  }
+  if (hasNumericList(candidate)) {
+    return {
+      ok: false,
+      error: new PassageParseError("INVALID_FORMAT", "Use { multiple: true } for same-chapter verse lists.")
+    };
   }
 
   try {
