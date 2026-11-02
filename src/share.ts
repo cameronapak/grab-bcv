@@ -1,4 +1,4 @@
-import { OSIS_BOOK_CODES, OSIS_BOOK_NAMES, type OsisBookCode } from "./books";
+import { BOOK_ALIAS_TO_OSIS, OSIS_BOOK_CODES, OSIS_BOOK_NAMES, type OsisBookCode } from "./books";
 import { formatPassageForDisplay } from "./format";
 import { parsePassage } from "./parser";
 import { PassageParseError, type ParsedPassage } from "./types";
@@ -55,6 +55,7 @@ const REFERENCE_TOKEN_PATTERN =
 const LEADING_WRAPPER_REGEX = /^[([{"'`]+/;
 const TRAILING_WRAPPER_REGEX = /[)\]}",;.!?'`]+$/;
 const DEFAULT_ROUTE_BASE_URL = "https://route.bible";
+const EXACT_BOOK_ALIAS_KEYS = new Set(BOOK_ALIAS_TO_OSIS.keys());
 
 const ENDURING_WORD_OVERRIDES: Partial<Record<OsisBookCode, string>> = {
   PSA: "psalm",
@@ -313,8 +314,29 @@ function extractUrlTokens(text: string): string[] {
   return text.match(new RegExp(URL_TOKEN_PATTERN, "gi")) ?? [];
 }
 
+function extractReferenceMatches(text: string): RegExpMatchArray[] {
+  return Array.from(text.matchAll(new RegExp(REFERENCE_TOKEN_PATTERN, "gi"))).filter((match) => {
+    const token = match[0];
+    const after = text.slice((match.index ?? 0) + token.length);
+    // A single contiguous passage cannot represent a comma/semicolon numeric list.
+    // A numbered book after punctuation starts a separate complete reference.
+    if (/^\s*[,;]\s*\d/.test(after) && !/^\s*[,;]\s*[1-3]\s*[A-Za-z]+[.\s]*\d/.test(after)) {
+      return false;
+    }
+
+    const chapterOnly = token.match(/^((?:[1-3]\s*)?[A-Za-z]+(?:\s+of\s+[A-Za-z]+)?)[.\s]+\d+(?:-\d+)?$/);
+    if (chapterOnly && normalizeCandidateToken(text) !== token) {
+      const aliasKey = chapterOnly[1]!.toLowerCase().replace(/[^a-z0-9]/g, "");
+      // In prose, words like "join 3 groups" are not sufficient evidence of John 3.
+      return EXACT_BOOK_ALIAS_KEYS.has(aliasKey);
+    }
+
+    return true;
+  });
+}
+
 function extractReferenceTokens(text: string): string[] {
-  return unique(text.match(new RegExp(REFERENCE_TOKEN_PATTERN, "gi")) ?? []);
+  return unique(extractReferenceMatches(text).map((match) => match[0]));
 }
 
 function normalizeCandidateToken(raw: string): string {
@@ -346,7 +368,7 @@ function collectCandidateMatches(input: string): CandidateMatch[] {
     addCandidate(match[0], match.index ?? 0, 3);
   }
 
-  for (const match of input.matchAll(new RegExp(REFERENCE_TOKEN_PATTERN, "gi"))) {
+  for (const match of extractReferenceMatches(input)) {
     if (!match[0]) {
       continue;
     }
@@ -584,6 +606,11 @@ function parseFromUrl(raw: string): string | null {
   ]);
 
   for (const source of genericSources) {
+    // Do not erase list punctuation and reinterpret separated verses as a range.
+    if (/\d\s*[,;]\s*\d/.test(tryDecode(source))) {
+      continue;
+    }
+
     const normalized = normalizeUrlSurface(source);
     if (!normalized) {
       continue;

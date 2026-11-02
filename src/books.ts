@@ -164,7 +164,7 @@ function isAliasFuzzyEligible(key: string): boolean {
   return /[a-z]/.test(key);
 }
 
-function levenshteinDistance(a: string, b: string): number {
+function aliasEditDistance(a: string, b: string): number {
   const aLen = a.length;
   const bLen = b.length;
 
@@ -178,6 +178,7 @@ function levenshteinDistance(a: string, b: string): number {
 
   let prevRow = Array.from({ length: bLen + 1 }, (_, index) => index);
   let nextRow = new Array<number>(bLen + 1).fill(0);
+  let twoRowsBack = new Array<number>(bLen + 1).fill(0);
 
   for (let i = 1; i <= aLen; i += 1) {
     nextRow[0] = i;
@@ -189,9 +190,14 @@ function levenshteinDistance(a: string, b: string): number {
       const insertion = nextRow[j - 1]! + 1;
       const substitution = prevRow[j - 1]! + cost;
       nextRow[j] = Math.min(deletion, insertion, substitution);
+      // Adjacent swapped letters are one typo, not two substitutions.
+      if (i > 1 && j > 1 && aChar === b[j - 2] && a[i - 2] === b[j - 1]) {
+        nextRow[j] = Math.min(nextRow[j]!, twoRowsBack[j - 2]! + 1);
+      }
     }
 
-    const previous = prevRow;
+    const previous = twoRowsBack;
+    twoRowsBack = prevRow;
     prevRow = nextRow;
     nextRow = previous;
   }
@@ -291,7 +297,7 @@ function resolveFuzzyBookAlias(key: string): OsisBookCode | null {
       continue;
     }
 
-    const distance = levenshteinDistance(key, candidateKey);
+    const distance = aliasEditDistance(key, candidateKey);
     const maxDistance = getMaxFuzzyDistance(key.length, candidateKey.length);
     if (distance > maxDistance) {
       continue;

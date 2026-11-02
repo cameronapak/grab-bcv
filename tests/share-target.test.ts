@@ -158,12 +158,61 @@ describe("findAnyPassage", () => {
     expect(findAnyPassage("not a passage")).toBeNull();
   });
 
+  it.each([
+    "John 3:16,18",
+    "John 3:16,1a",
+    "John 3:16; 18",
+    "John 3:16-18,20",
+    "JHN.3.16,18",
+    "Read John 3:16,18 today.",
+    "Read John3:16,18 today.",
+    "https://www.biblegateway.com/passage/?search=John%203%3A16%2C18",
+    "https://www.bible.com/bible/1/JHN.3.16,18.KJV",
+  ])("does not silently truncate unsupported numeric lists: %s", (input) => {
+    expect(findAnyPassage(input)).toBeNull();
+    expect(findAnyPassage(input, { multiple: true })).toEqual([]);
+    expect(tryParseAnyPassage(input).ok).toBe(false);
+  });
+
+  it("skips an unsupported list without losing a separate valid passage", () => {
+    const input = "Read John 3:16,18 and Romans 8:28.";
+    expect(findAnyPassage(input)?.canonical).toBe("ROM.8.28");
+    expect(findAnyPassage(input, { multiple: true }).map((p) => p.canonical)).toEqual(["ROM.8.28"]);
+  });
+
+  it.each([
+    "Please join 3 groups",
+    "The duet 2 starts soon",
+    "We act on 3 requests",
+    "I wrote like 10 notes",
+    "See where like 4 is a bible chip LOL #bug #dotflowy",
+  ])(
+    "does not fuzzy-match chapter-only references in prose: %s", (input) => {
+      expect(findAnyPassage(input)).toBeNull();
+      expect(findAnyPassage(input, { multiple: true })).toEqual([]);
+    }
+  );
+
+  it("keeps explicit chapter aliases and verse-level typo recovery in prose", () => {
+    expect(findAnyPassage("Read John 3 today.")?.canonical).toBe("JHN.3");
+    expect(findAnyPassage("Read Jhon 3:16 today.")?.canonical).toBe("JHN.3.16");
+    expect(findAnyPassage("Jhon 3")?.canonical).toBe("JHN.3");
+  });
+
   it("returns multiple parsed passages in source order", () => {
     const parsed = findAnyPassage(
       "https://www.biblegateway.com/passage/?search=John%203%3A12&version=KJV and Romans 8:28",
       { multiple: true }
     );
     expect(parsed.map((item) => item.canonical)).toEqual(["JHN.3.12", "ROM.8.28"]);
+  });
+
+  it("preserves complete numbered references after list punctuation", () => {
+    const input = "John 3:16, 1 John 4:7; 2 Corinthians 5:17";
+    expect(findAnyPassage(input)?.canonical).toBe("JHN.3.16");
+    expect(findAnyPassage(input, { multiple: true }).map((p) => p.canonical)).toEqual([
+      "JHN.3.16", "1JN.4.7", "2CO.5.17"
+    ]);
   });
 
   it("dedupes duplicate references when using multiple-output overload", () => {

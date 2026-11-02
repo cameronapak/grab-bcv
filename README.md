@@ -411,7 +411,10 @@ Runs `prepack` first, bumps patch only when local matches npm latest, then publi
 
 ## Notes
 
-- Book aliases use exact matching first, then conservative fuzzy fallback for common misspellings.
+- Book aliases use exact matching first, then conservative fuzzy fallback for common misspellings, including adjacent swapped letters (`Jhon`, `Pslam`, `Duet`).
 - Ambiguous short aliases return `null` rather than guessing.
+- Fuzzy ties also return `null`: `Jonh` is equally close to `John` and the Jonah alias `jona`. Exact aliases such as `Jon` (Jonah) and `Jud` (Jude) keep their meaning.
+- In free text, chapter-only references require an exact book alias, so `join 3 groups` does not become John 3. Standalone references and chapter:verse references still support typo correction.
+- Numeric lists such as `John 3:16,18` are not supported. Free-text extraction skips these candidates instead of returning only the first verse. Separate complete references such as `John 3:16, 1 John 4:7` remain supported.
 - Input normalization handles full-width punctuation, Unicode dash variants, invisible characters, and flexible whitespace.
 - Paragraph data covers all 66 books and is bundled in the package (zero network calls at runtime).
